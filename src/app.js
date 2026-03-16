@@ -2,6 +2,7 @@ const express = require("express");
 const publicRouter  = require("./routes/public");
 const profileRouter = require("./routes/profile");
 const adminRouter   = require("./routes/admin");
+const otpRouter     = require("./routes/otp");
 const app = express();
 
 // ─── Body Parsing ─────────────────────────────────────────────────────────────
@@ -39,6 +40,9 @@ app.use("/profile", profileRouter);
 
 // ─── Admin Routes (OTP + JWT-protected) ───────────────────────────────────────
 app.use("/admin", adminRouter);
+
+// ─── OTP Routes (Generic Send/Verify) ─────────────────────────────────────────
+app.use("/otp", otpRouter);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
 app.use((req, res) => {

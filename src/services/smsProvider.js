@@ -2,38 +2,34 @@
  * services/smsProvider.js
  *
  * SMS gateway abstraction for LifeBand.
- * Provider: Fast2SMS — OTP Route (no DLT registration required)
+ * Provider: 2Factor.in
  *
- * Fast2SMS OTP route details
+ * 2Factor OTP route details
  * ──────────────────────────
- *   Endpoint:  POST https://www.fast2sms.com/dev/bulkV2
- *   Auth:      Authorization header (API key)
- *   Route:     "otp"  ← no DLT, lowest cost (~₹0.18/msg)
+ *   Endpoint:  GET https://2factor.in/API/V1/{API_KEY}/SMS/{phone}/{otp}
  *   numbers:   10-digit Indian number without country code
- *   variables_values: the raw OTP digits (e.g. "048213")
- *   flash:     0  (standard inbox delivery)
+ *   otp:       the raw OTP digits (e.g. "048213")
  *
  * This file exports two functions:
  *   sendOtpSms(phone, otp)   — used by otpService (preferred)
  *   sendSms(phone, message)  — generic fallback (log-only unless extended)
  *
  * Environment variables required:
- *   FAST2SMS_API_KEY  — from https://www.fast2sms.com/dashboard/dev-api
- *   SMS_ENABLED       — set to "true" to send real SMS (any other value = log only)
+ *   SMS_API_KEY  — from 2Factor.in
+ *   SMS_ENABLED  — set to "true" to send real SMS (any other value = log only)
  */
 
 "use strict";
 
 const axios = require("axios");
 
-const FAST2SMS_URL = "https://www.fast2sms.com/dev/bulkV2";
-const API_KEY      = process.env.FAST2SMS_API_KEY;
-const SMS_ENABLED  = process.env.SMS_ENABLED === "true";
+const API_KEY     = process.env.SMS_API_KEY;
+const SMS_ENABLED = process.env.SMS_ENABLED === "true";
 
 // ─── Phone normalisation ──────────────────────────────────────────────────────
 
 /**
- * Fast2SMS OTP route accepts 10-digit Indian numbers only (no country code).
+ * 2Factor accepts 10-digit Indian numbers only (no country code).
  * This function strips everything except digits and returns the last 10.
  *
  * "+91 98765 43210"  →  "9876543210"
@@ -51,8 +47,7 @@ const normalisePhone = (phone) => {
 // ─── sendOtpSms ──────────────────────────────────────────────────────────────
 
 /**
- * Send a 6-digit OTP via Fast2SMS OTP route.
- * No DLT registration required.
+ * Send a 6-digit OTP via 2Factor.in SMS route.
  *
  * @param {string} phone - Raw phone number (any format)
  * @param {string} otp   - Raw 6-digit OTP (plain text — NOT the hash)
@@ -69,46 +64,33 @@ const sendOtpSms = async (phone, otp) => {
   }
 
   if (!API_KEY) {
-    throw new Error("FAST2SMS_API_KEY is not set in environment variables");
+    throw new Error("SMS_API_KEY is not set in environment variables");
   }
 
   try {
-    const response = await axios.post(
-      FAST2SMS_URL,
-      {
-        route:            "otp",
-        variables_values: String(otp),
-        flash:            0,
-        numbers:          number,
-      },
-      {
-        headers: {
-          authorization: API_KEY,
-          "Content-Type": "application/json",
-          "Cache-Control": "no-cache",
-        },
-        timeout: 10_000, // 10 s — fail fast; don't block OTP response
-      }
-    );
+    const url = `https://2factor.in/API/V1/${API_KEY}/SMS/${number}/${otp}/AUTOGEN`;
+    const response = await axios.get(url, {
+      timeout: 10_000, // 10 s — fail fast; don't block OTP response
+    });
 
-    // Fast2SMS returns { return: true, status_code: 200, message: [...] }
-    // on success.  Any other shape is treated as a failure.
-    if (!response.data?.return) {
+    // 2Factor.in returns { Status: "Success", Details: "..." }
+    // on success. Any other shape is treated as a failure.
+    if (response.data?.Status !== "Success") {
       const detail = JSON.stringify(response.data);
-      console.error(`[SMS] Fast2SMS returned failure for ${number}: ${detail}`);
+      console.error(`[SMS] 2Factor returned failure for ${number}: ${detail}`);
       throw new Error(`SMS delivery failed: ${detail}`);
     }
 
-    console.log(`[SMS] OTP dispatched to ${number} via Fast2SMS`);
+    console.log(`[SMS] OTP dispatched to ${number} via 2Factor.in`);
   } catch (err) {
     if (err.response) {
       // Axios received a non-2xx HTTP response
       const detail = JSON.stringify(err.response.data);
-      console.error(`[SMS] Fast2SMS HTTP ${err.response.status} for ${number}: ${detail}`);
+      console.error(`[SMS] 2Factor HTTP ${err.response.status} for ${number}: ${detail}`);
       throw new Error(`SMS delivery failed (HTTP ${err.response.status}): ${detail}`);
     }
     // Network error, timeout, etc.
-    console.error(`[SMS] Fast2SMS request error for ${number}:`, err.message);
+    console.error(`[SMS] 2Factor request error for ${number}:`, err.message);
     throw err;
   }
 };
