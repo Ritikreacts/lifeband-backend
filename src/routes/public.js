@@ -23,7 +23,7 @@ const Band            = require("../models/Band");
 const Owner           = require("../models/Owner");
 const EmergencyProfile = require("../models/EmergencyProfile");
 const { sendOtp, verifyOtp, OtpError } = require("../services/otpService");
-const { hashPhone }   = require("../utils/hash");
+const { hashEmail }   = require("../utils/hash");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -34,14 +34,22 @@ const { hashPhone }   = require("../utils/hash");
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
 /**
- * Derive the last 4 digits of a phone number (digits only, last 4 chars).
+ * Obfuscate an email address for partial display.
+ * E.g. "john.doe@example.com" -> "j...e@example.com"
  * Stored purely for owner-side display — never used for identification.
  *
- * @param {string} phone - Raw phone string
- * @returns {string} e.g. "3210"
+ * @param {string} email - Raw email string
+ * @returns {string} obfuscated email
  */
-const phoneLast4 = (phone) =>
-  String(phone).replace(/\D/g, "").slice(-4);
+const obfuscateEmail = (email) => {
+  const str = String(email).trim();
+  const parts = str.split("@");
+  if (parts.length !== 2) return str.slice(0, 4) + "...";
+  const name = parts[0];
+  const dom = parts[1];
+  if (name.length <= 2) return name + "***@" + dom;
+  return name[0] + "***" + name[name.length - 1] + "@" + dom;
+};
 
 /**
  * Build the public-safe shape of an EmergencyProfile document.
@@ -115,23 +123,23 @@ router.get("/i/:bandId", wrap(async (req, res) => {
 // ─── 2. Request OTP (registration) ───────────────────────────────────────────
 //
 //   POST /register/request-otp
-//   Body: { phoneNumber }
+//   Body: { emailAddress }
 //
-//   Fires a 6-digit OTP to the provided phone number.
+//   Fires a 6-digit OTP to the provided email address.
 //   The OTP session is stored in OtpSession with a 5-minute TTL.
 
 router.post("/register/request-otp", wrap(async (req, res) => {
-  const { phoneNumber } = req.body;
+  const { emailAddress } = req.body;
 
-  if (!phoneNumber) {
+  if (!emailAddress) {
     return res.status(400).json({
       success: false,
-      message: "phoneNumber is required",
+      message: "emailAddress is required",
     });
   }
 
   try {
-    const result = await sendOtp(phoneNumber);
+    const result = await sendOtp(emailAddress);
     return res.status(200).json({ success: true, message: result.message });
   } catch (err) {
     if (err instanceof OtpError) {
@@ -148,7 +156,7 @@ router.post("/register/request-otp", wrap(async (req, res) => {
 // ─── 3. Complete Registration ─────────────────────────────────────────────────
 //
 //   POST /register/complete
-//   Body: { bandId, phoneNumber, otp, name, bloodGroup, emergencyContact,
+//   Body: { bandId, emailAddress, otp, name, bloodGroup, emergencyContact,
 //           allergies, medicalConditions, medications, notes }
 //
 //   CRITICAL RULES (enforced here):
@@ -163,7 +171,7 @@ router.post("/register/request-otp", wrap(async (req, res) => {
 router.post("/register/complete", wrap(async (req, res) => {
   const {
     bandId,
-    phoneNumber,
+    emailAddress,
     otp,
     // profile fields
     name,
@@ -178,7 +186,7 @@ router.post("/register/complete", wrap(async (req, res) => {
   // ── Basic input validation ────────────────────────────────────────────────
   const missing = [];
   if (!bandId)           missing.push("bandId");
-  if (!phoneNumber)      missing.push("phoneNumber");
+  if (!emailAddress)     missing.push("emailAddress");
   if (!otp)             missing.push("otp");
   if (!bloodGroup)      missing.push("bloodGroup");
   if (!emergencyContact) missing.push("emergencyContact");
@@ -192,10 +200,10 @@ router.post("/register/complete", wrap(async (req, res) => {
 
   // ── Step 1: Verify OTP ──────────────────────────────────────────────────
   //   verifyOtp throws OtpError on any failure; session is consumed on success.
-  let phoneHash;
+  let emailHash;
   try {
-    const result = await verifyOtp(phoneNumber, String(otp));
-    phoneHash = result.phoneHash;
+    const result = await verifyOtp(emailAddress, String(otp));
+    emailHash = result.emailHash;
   } catch (err) {
     if (err instanceof OtpError) {
       return res.status(err.statusCode).json({
@@ -242,8 +250,8 @@ router.post("/register/complete", wrap(async (req, res) => {
   try {
     await Owner.create({
       bandId,
-      phoneHash,
-      phoneLast4: phoneLast4(phoneNumber),
+      emailHash,
+      emailObfuscated: obfuscateEmail(emailAddress),
     });
 
     await EmergencyProfile.create({
@@ -287,7 +295,7 @@ router.post("/register/complete", wrap(async (req, res) => {
 //   GET /emergency/:bandId
 //
 //   No auth required.  Returns only the EmergencyProfile fields.
-//   Does NOT expose Owner data (phoneHash, phoneLast4, etc.).
+//   Does NOT expose Owner data (emailHash, emailObfuscated, etc.).
 
 router.get("/emergency/:bandId", wrap(async (req, res) => {
   const { bandId } = req.params;

@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const adminUserSchema = new mongoose.Schema(
   {
-    phoneHash: {
+    emailHash: {
       type: String,
       required: true,
       unique: true,

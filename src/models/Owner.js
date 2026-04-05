@@ -8,14 +8,14 @@ const ownerSchema = new mongoose.Schema(
       index: true,
       trim: true,
     },
-    phoneHash: {
+    emailHash: {
       type: String,
       required: true,
     },
-    phoneLast4: {
+    emailObfuscated: {
       type: String,
       trim: true,
-      maxlength: 4,
+      maxlength: 255,
     },
     createdAt: {
       type: Date,

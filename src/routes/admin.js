@@ -34,7 +34,7 @@ const { signToken }                    = require("../utils/hash");
 
 /**
  * Admin OTP rate limit: 5 requests per hour per IP.
- * Protects SMS budget and prevents enumeration of admin phone numbers.
+ * Protects email sending quotas and prevents enumeration of admin emails.
  */
 const adminOtpLimiter = rateLimit({
   windowMs:         60 * 60 * 1000, // 1 hour
@@ -56,23 +56,23 @@ const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // ─── 1. Request admin OTP ─────────────────────────────────────────────────────
 //
 //   POST /admin/request-otp
-//   Body: { phoneNumber }
+//   Body: { emailAddress }
 //
-//   We do NOT validate whether the phone is a known admin here — that
-//   check happens at login time. This prevents enumeration of admin numbers.
+//   We do NOT validate whether the email is a known admin here — that
+//   check happens at login time. This prevents enumeration of admin emails.
 
 router.post("/request-otp", adminOtpLimiter, wrap(async (req, res) => {
-  const { phoneNumber } = req.body;
+  const { emailAddress } = req.body;
 
-  if (!phoneNumber) {
+  if (!emailAddress) {
     return res.status(400).json({
       success: false,
-      message: "phoneNumber is required",
+      message: "emailAddress is required",
     });
   }
 
   try {
-    const result = await sendOtp(phoneNumber);
+    const result = await sendOtp(emailAddress);
     return res.status(200).json({ success: true, message: result.message });
   } catch (err) {
     if (err instanceof OtpError) {
@@ -89,29 +89,29 @@ router.post("/request-otp", adminOtpLimiter, wrap(async (req, res) => {
 // ─── 2. Admin login (OTP → JWT) ───────────────────────────────────────────────
 //
 //   POST /admin/login
-//   Body: { phoneNumber, otp }
+//   Body: { emailAddress, otp }
 //
 //   Steps:
 //     a) Verify OTP (consumes session — replay proof).
-//     b) Derive phoneHash and look up AdminUser.
+//     b) Derive emailHash and look up AdminUser.
 //     c) If no AdminUser record exists → 403 (not authorised as admin).
-//     d) Issue a signed JWT containing { adminId, phoneHash, role:"admin" }.
+//     d) Issue a signed JWT containing { adminId, emailHash, role:"admin" }.
 
 router.post("/login", wrap(async (req, res) => {
-  const { phoneNumber, otp } = req.body;
+  const { emailAddress, otp } = req.body;
 
-  if (!phoneNumber || !otp) {
+  if (!emailAddress || !otp) {
     return res.status(400).json({
       success: false,
-      message: "phoneNumber and otp are required",
+      message: "emailAddress and otp are required",
     });
   }
 
   // Gate 1: OTP verification
-  let phoneHash;
+  let emailHash;
   try {
-    const result = await verifyOtp(phoneNumber, String(otp));
-    phoneHash = result.phoneHash;
+    const result = await verifyOtp(emailAddress, String(otp));
+    emailHash = result.emailHash;
   } catch (err) {
     if (err instanceof OtpError) {
       return res.status(err.statusCode).json({
@@ -124,11 +124,11 @@ router.post("/login", wrap(async (req, res) => {
   }
 
   // Gate 2: AdminUser existence check
-  const admin = await AdminUser.findOne({ phoneHash });
+  const admin = await AdminUser.findOne({ emailHash });
 
   if (!admin) {
     // Deliberate: same message whether OTP was valid-but-not-admin or
-    // phone simply isn't an admin. Avoids leaking admin phone list.
+    // email simply isn't an admin. Avoids leaking admin email list.
     return res.status(403).json({
       success: false,
       code: "NOT_ADMIN",
@@ -139,7 +139,7 @@ router.post("/login", wrap(async (req, res) => {
   // Issue JWT
   const token = signToken({
     adminId:   admin._id.toString(),
-    phoneHash: admin.phoneHash,
+    emailHash: admin.emailHash,
     role:      "admin",
   });
 

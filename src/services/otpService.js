@@ -12,7 +12,7 @@
  *   - Maximum 5 verification attempts before the session is locked
  *
  * Hashing strategy:
- *   - Phone numbers  → SHA-256 (via hashPhone)   — stored as phoneHash
+ *   - Email addresses  → SHA-256 (via hashEmail)   — stored as emailHash
  *   - OTP values     → SHA-256 (via hashOtp)     — stored as otpHash
  *   - Raw values are NEVER persisted or logged.
  */
@@ -20,9 +20,9 @@
 "use strict";
 
 const OtpSession = require("../models/OtpSession");
-const { hashPhone, hashOtp } = require("../utils/hash");
+const { hashEmail, hashOtp } = require("../utils/hash");
 const { generateOtp, getOtpExpiry, verifyOtpHash, MAX_OTP_ATTEMPTS } = require("../utils/otp");
-const { sendOtpSms } = require("./smsProvider");
+const { sendOtpEmail } = require("./emailProvider");
 
 // ─── Custom error class ────────────────────────────────────────────────────────
 
@@ -38,57 +38,55 @@ class OtpError extends Error {
 // ─── sendOtp ──────────────────────────────────────────────────────────────────
 
 /**
- * Generate and dispatch an OTP for the given phone number.
+ * Generate and dispatch an OTP for the given email address.
  *
  * Steps:
- *   1. Normalise and SHA-256 hash the phone number.
- *   2. Invalidate any existing active session for this phone (one active OTP
- *      per number at a time — prevents session flooding).
+ *   1. Normalise and SHA-256 hash the email address.
+ *   2. Invalidate any existing active session for this email (one active OTP
+ *      per email at a time — prevents session flooding).
  *   3. Generate a cryptographically random 6-digit OTP.
  *   4. Hash the OTP and persist the session with a 5-minute TTL.
- *   5. Dispatch the OTP via the SMS provider.
+ *   5. Dispatch the OTP via the email provider.
  *
- * @param {string} phoneNumber - Raw phone string in any format
+ * @param {string} emailAddress - Raw email string
  * @returns {Promise<{ message: string }>}
  * @throws {OtpError}
  */
-const sendOtp = async (phoneNumber) => {
-  if (!phoneNumber) {
-    throw new OtpError("Phone number is required", "PHONE_REQUIRED");
+const sendOtp = async (emailAddress) => {
+  if (!emailAddress) {
+    throw new OtpError("Email address is required", "EMAIL_REQUIRED");
   }
 
-  const phone = String(phoneNumber).trim();
-  const pHash = hashPhone(phone);
+  const email = String(emailAddress).trim();
+  const eHash = hashEmail(email);
 
   // Invalidate any pre-existing session (prevents parallel session abuse)
-  await OtpSession.deleteMany({ phoneHash: pHash });
+  await OtpSession.deleteMany({ emailHash: eHash });
 
   const otp = generateOtp();
   const otpH = hashOtp(otp);
   const expiresAt = getOtpExpiry();
 
   await OtpSession.create({
-    phoneHash: pHash,
+    emailHash: eHash,
     otpHash: otpH,
     expiresAt,
     attempts: 0,
   });
 
-  // Dispatch via Fast2SMS OTP route — passes raw OTP; provider formats the message.
+  // Dispatch via email provider
   try {
-    await sendOtpSms(phone, otp);
-  } catch (smsErr) {
-    // SMS dispatch failed — delete the session so the user can request a fresh
+    await sendOtpEmail(email, otp);
+  } catch (emailErr) {
+    // Email dispatch failed — delete the session so the user can request a fresh
     // OTP immediately without waiting for TTL expiry.
-    await OtpSession.deleteOne({ phoneHash: pHash });
+    await OtpSession.deleteOne({ emailHash: eHash });
 
-    // Log the full provider error internally; never expose gateway details
-    // (HTTP status codes, Fast2SMS error bodies, etc.) to the client.
-    console.error("[OTP] SMS delivery failed:", smsErr.message);
+    console.error("[OTP] Email delivery failed:", emailErr.message);
 
     throw new OtpError(
       "Failed to send OTP. Please try again in a moment.",
-      "SMS_DELIVERY_FAILED",
+      "EMAIL_DELIVERY_FAILED",
       503
     );
   }
@@ -102,29 +100,29 @@ const sendOtp = async (phoneNumber) => {
  * Verify an OTP submitted by the user.
  *
  * Steps:
- *   1. Hash the phone to find the active OtpSession.
+ *   1. Hash the email to find the active OtpSession.
  *   2. Reject if no session exists (expired or never sent).
  *   3. Reject if the session has already hit the max attempt limit.
  *   4. Increment the attempt counter (fail-first; prevents race conditions).
  *   5. Compare the submitted OTP against the stored hash (timing-safe).
  *   6. If correct, delete the session so the OTP cannot be replayed.
- *   7. Return success with the phoneHash so the caller can proceed.
+ *   7. Return success with the emailHash so the caller can proceed.
  *
- * @param {string} phoneNumber - Raw phone string (same format as sendOtp)
- * @param {string} otp         - 6-digit OTP submitted by the user
- * @returns {Promise<{ success: true, phoneHash: string }>}
+ * @param {string} emailAddress - Raw email string (same format as sendOtp)
+ * @param {string} otp          - 6-digit OTP submitted by the user
+ * @returns {Promise<{ success: true, emailHash: string }>}
  * @throws {OtpError}
  */
-const verifyOtp = async (phoneNumber, otp) => {
-  if (!phoneNumber || !otp) {
-    throw new OtpError("Phone number and OTP are required", "PARAMS_REQUIRED");
+const verifyOtp = async (emailAddress, otp) => {
+  if (!emailAddress || !otp) {
+    throw new OtpError("Email address and OTP are required", "PARAMS_REQUIRED");
   }
 
-  const phone = String(phoneNumber).trim();
-  const pHash = hashPhone(phone);
+  const email = String(emailAddress).trim();
+  const eHash = hashEmail(email);
 
   // Find active session (MongoDB TTL will have already removed expired docs)
-  const session = await OtpSession.findOne({ phoneHash: pHash });
+  const session = await OtpSession.findOne({ emailHash: eHash });
 
   if (!session) {
     throw new OtpError(
@@ -174,7 +172,7 @@ const verifyOtp = async (phoneNumber, otp) => {
   // OTP is correct — consume the session (one-time use)
   await OtpSession.deleteOne({ _id: session._id });
 
-  return { success: true, phoneHash: pHash };
+  return { success: true, emailHash: eHash };
 };
 
 // ─── Exports ──────────────────────────────────────────────────────────────────

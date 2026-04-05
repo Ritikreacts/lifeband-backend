@@ -9,24 +9,19 @@ if (!JWT_SECRET) {
 }
 
 // ─── Plain SHA-256 Helpers ────────────────────────────────────────────────────
-// These are intentionally keyless so that a phone hash can be re-derived
+// These are intentionally keyless so that a hash can be re-derived
 // from any service without requiring a shared secret at hash time.
 // DO NOT log or expose the raw values passed to these functions.
 
 /**
- * Deterministic SHA-256 hash of a phone number.
- * Normalises the input (trim + remove non-digit chars) before hashing
- * so that "+91 98765 43210" and "9876543210" produce the same digest.
+ * Deterministic SHA-256 hash of an email address.
+ * Normalises the input (trim + lower) before hashing.
  *
- * @param {string} phone - Raw phone string (any format)
+ * @param {string} email - Raw email string
  * @returns {string} hex digest
  */
-const hashPhone = (phone) => {
-  // Strip formatting noise only (spaces, dashes, parentheses, dots).
-  // The leading '+' and all digits are preserved so that:
-  //   "+91 98765 43210"  →  "+919876543210"  (same hash as "+919876543210")
-  //   "9876543210"       →  "9876543210"      (different — no country code)
-  const normalised = String(phone).replace(/[\s\-().]/g, "");
+const hashEmail = (email) => {
+  const normalised = String(email).trim().toLowerCase();
   return crypto.createHash("sha256").update(normalised).digest("hex");
 };
 
@@ -42,7 +37,7 @@ const hashOtp = (otp) => {
 
 // ─── HMAC Helper (internal / legacy) ─────────────────────────────────────────
 // Kept for any code that relied on the original keyed hash.
-// New code should prefer hashPhone / hashOtp above.
+// New code should prefer hashEmail / hashOtp above.
 
 const HASH_SECRET = process.env.HASH_SECRET;
 
@@ -80,4 +75,4 @@ const verifyToken = (token) => {
   return jwt.verify(token, JWT_SECRET);
 };
 
-module.exports = { hashPhone, hashOtp, hashValue, signToken, verifyToken };
+module.exports = { hashEmail, hashOtp, hashValue, signToken, verifyToken };

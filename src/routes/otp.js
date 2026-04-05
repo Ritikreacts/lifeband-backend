@@ -6,7 +6,7 @@
  *
  * Routes
  * ──────
- *   POST /otp/send    Request an OTP (max 3 req per 10 mins per phone)
+ *   POST /otp/send    Request an OTP (max 3 req per 10 mins per email)
  *   POST /otp/verify  Verify OTP
  */
 
@@ -26,19 +26,17 @@ const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 // ─── Rate Limiter ─────────────────────────────────────────────────────────────
 
 /**
- * Limit logic: Max 3 OTP requests per phone per 10 minutes.
- * We extract the last 10 digits of the phone number to group requests.
+ * Limit logic: Max 3 OTP requests per email per 10 minutes.
  */
 const otpSendLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, // 10 minutes
   max: 3,
   keyGenerator: (req) => {
-    // Normalise phone to 10 digits to prevent bypasses like +91999 vs 0999
-    if (req.body && req.body.phone) {
-      return String(req.body.phone).replace(/\D/g, "").slice(-10);
+    if (req.body && req.body.email) {
+      return String(req.body.email).trim().toLowerCase();
     }
-    // Fallback if phone is missing
-    return "missing-phone";
+    // Fallback if email is missing
+    return "missing-email";
   },
   standardHeaders: true,
   legacyHeaders: false,
@@ -51,17 +49,17 @@ const otpSendLimiter = rateLimit({
 
 // ─── POST /otp/send ─────────────────────────────────────────────────────────
 router.post("/send", otpSendLimiter, wrap(async (req, res) => {
-  const { phone } = req.body;
+  const { email } = req.body;
 
-  if (!phone) {
+  if (!email) {
     return res.status(400).json({
       success: false,
-      message: "phone is required",
+      message: "email is required",
     });
   }
 
   try {
-    const result = await sendOtp(phone);
+    const result = await sendOtp(email);
     return res.status(200).json({ success: true, message: result.message });
   } catch (err) {
     if (err instanceof OtpError) {
@@ -77,18 +75,18 @@ router.post("/send", otpSendLimiter, wrap(async (req, res) => {
 
 // ─── POST /otp/verify ───────────────────────────────────────────────────────
 router.post("/verify", wrap(async (req, res) => {
-  const { phone, otp } = req.body;
+  const { email, otp } = req.body;
 
-  if (!phone || !otp) {
+  if (!email || !otp) {
     return res.status(400).json({
       success: false,
-      message: "phone and otp are required",
+      message: "email and otp are required",
     });
   }
 
   try {
     // verifyOtp will delete the session on success and track attempts on failure
-    await verifyOtp(phone, otp);
+    await verifyOtp(email, otp);
     return res.status(200).json({
       success: true,
       message: "OTP verified successfully",

@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 
 const otpSessionSchema = new mongoose.Schema(
   {
-    phoneHash: {
+    emailHash: {
       type: String,
       required: true,
     },

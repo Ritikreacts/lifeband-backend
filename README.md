@@ -15,7 +15,7 @@ LifeBand is a physical wearable band engraved with a QR code. When scanned (by a
 
 The backend handles the complete lifecycle:
 - **Admin** generates band batches → downloads QR code ZIPs → sends to manufacturer
-- **User** scans band → registers it with their phone (OTP verified) → fills medical profile
+- **User** scans band → registers it with their email (OTP verified) → fills medical profile
 - **Anyone** scans the band in an emergency → reads the profile instantly, no login required
 
 ---
@@ -46,10 +46,10 @@ backend/
 │   ├── models/
 │   │   ├── Band.js             # Physical band (bandId, isRegistered)
 │   │   ├── BandSeries.js       # Manufacturing batch tracking
-│   │   ├── Owner.js            # Band ownership (hashed phone)
+│   │   ├── Owner.js            # Band ownership (hashed email)
 │   │   ├── EmergencyProfile.js # Medical profile data
 │   │   ├── OtpSession.js       # OTP sessions with TTL auto-expiry
-│   │   └── AdminUser.js        # Admin phone allowlist
+│   │   └── AdminUser.js        # Admin email allowlist
 │   ├── middleware/
 │   │   └── adminAuth.js        # JWT Bearer token validation
 │   ├── routes/
@@ -61,7 +61,7 @@ backend/
 │   │   ├── smsProvider.js      # Fast2SMS OTP route integration
 │   │   └── bandService.js      # Band generation, QR creation, ZIP packaging
 │   └── utils/
-│       ├── hash.js             # SHA-256 phone hashing + JWT helpers
+│       ├── hash.js             # SHA-256 email hashing + JWT helpers
 │       └── otp.js              # OTP generation, expiry, timing-safe compare
 ├── storage/
 │   └── series/                 # Permanent ZIP archives (gitignored)
@@ -82,25 +82,25 @@ backend/
 | `GET` | `/health` | — | Liveness check |
 | `GET` | `/i/:bandId` | — | Scan a band — returns profile or registration prompt |
 | `GET` | `/emergency/:bandId` | — | Read-only emergency profile lookup |
-| `POST` | `/register/request-otp` | `{ phoneNumber }` | Send OTP for registration |
-| `POST` | `/register/complete` | `{ bandId, phoneNumber, otp, name, bloodGroup, emergencyContact, allergies, medicalConditions, medications, notes }` | Verify OTP → lock band → create profile |
+| `POST` | `/register/request-otp` | `{ emailAddress }` | Send OTP for registration |
+| `POST` | `/register/complete` | `{ bandId, emailAddress, otp, name, bloodGroup, emergencyContact, allergies, medicalConditions, medications, notes }` | Verify OTP → lock band → create profile |
 
 ### Profile Routes — OTP-verified, ownership-checked
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/profile/request-otp` | `{ phoneNumber }` | Send OTP for profile edit |
-| `POST` | `/profile/update` | `{ bandId, phoneNumber, otp, ...editableFields }` | Verify OTP + ownership → update profile |
+| `POST` | `/profile/request-otp` | `{ emailAddress }` | Send OTP for profile edit |
+| `POST` | `/profile/update` | `{ bandId, emailAddress, otp, ...editableFields }` | Verify OTP + ownership → update profile |
 
 > **Editable fields:** `allergies`, `medicalConditions`, `medications`, `notes`, `emergencyContact`
-> **Immutable fields:** `bandId`, `bloodGroup`, `name`, `phoneHash` — never changed after registration.
+> **Immutable fields:** `bandId`, `bloodGroup`, `name`, `emailHash` — never changed after registration.
 
 ### Admin Routes — JWT Bearer token required
 
 | Method | Endpoint | Body | Description |
 |---|---|---|---|
-| `POST` | `/admin/request-otp` | `{ phoneNumber }` | Send admin OTP (rate-limited: 5/hr/IP) |
-| `POST` | `/admin/login` | `{ phoneNumber, otp }` | Verify OTP → check AdminUser → issue JWT |
+| `POST` | `/admin/request-otp` | `{ emailAddress }` | Send admin OTP (rate-limited: 5/hr/IP) |
+| `POST` | `/admin/login` | `{ emailAddress, otp }` | Verify OTP → check AdminUser → issue JWT |
 | `GET` | `/admin/dashboard` | — | Band counts + latest series |
 | `GET` | `/admin/series` | — | All manufacturing series (newest first) |
 | `POST` | `/admin/generate-series` | `{ count }` | Generate bands + QR PNGs + ZIP (max 500/batch) |
@@ -112,14 +112,14 @@ backend/
 
 ### User Registration
 ```
-POST /register/request-otp   → OTP sent to phone
+POST /register/request-otp   → OTP sent to email
 POST /register/complete      → OTP verified → band locked atomically
                              → Owner + EmergencyProfile created
 ```
 
 ### Profile Editing
 ```
-POST /profile/request-otp   → OTP sent to phone
+POST /profile/request-otp   → OTP sent to email
 POST /profile/update        → OTP verified → ownership confirmed
                             → only whitelisted fields updated
 ```
@@ -138,12 +138,12 @@ Authorization: Bearer <token>  → all /admin/* routes
 
 | Concern | Implementation |
 |---|---|
-| Phone number privacy | SHA-256 hashed before storage — never stored in plaintext |
+| Email privacy | SHA-256 hashed before storage — never stored in plaintext |
 | OTP brute-force | Max 5 attempts → session deleted → user must re-request |
 | OTP replay | Session consumed on first successful verify (one-time use) |
 | OTP timing attack | `crypto.timingSafeEqual` comparison |
 | Band double-registration | Atomic `findOneAndUpdate({ isRegistered: false })` — MongoDB-level lock |
-| Admin enumeration | Same error message whether phone is unknown admin or wrong OTP |
+| Admin enumeration | Same error message whether email is unknown admin or wrong OTP |
 | JWT forgery | HS256 signed with `JWT_SECRET` (32+ char random string) |
 | Admin OTP abuse | `express-rate-limit`: 5 requests/hour/IP |
 | Body injection | 10kb body limit; profile updates use explicit field whitelist |
@@ -220,7 +220,7 @@ There is no admin signup endpoint (by design). Add the first admin directly via 
 ```js
 // In Atlas Data Explorer → lifeband → adminusers → Insert Document
 {
-  "phoneHash": "<sha256 of +91XXXXXXXXXX>",
+  "emailHash": "<sha256 of lowercase email>",
   "createdAt": { "$date": "2026-01-01T00:00:00Z" }
 }
 ```
@@ -228,9 +228,9 @@ There is no admin signup endpoint (by design). Add the first admin directly via 
 Or run a quick Node script:
 ```js
 const crypto = require("crypto");
-const phone  = "+91XXXXXXXXXX"; // your admin number
-const hash   = crypto.createHash("sha256").update(phone).digest("hex");
-console.log(hash); // paste this as phoneHash in Atlas
+const email  = "admin@example.com"; // your admin email
+const hash   = crypto.createHash("sha256").update(email.toLowerCase()).digest("hex");
+console.log(hash); // paste this as emailHash in Atlas
 ```
 
 ### 4. Run
@@ -250,7 +250,7 @@ Server starts on `http://localhost:5000`.
 ## Admin Manufacturing Flow
 
 ```
-1. POST /admin/request-otp   → OTP to admin phone
+1. POST /admin/request-otp   → OTP to admin email
 2. POST /admin/login         → receive JWT
 3. POST /admin/generate-series { count: 100 }
    → 100 bands created (LB-000001 to LB-000100)

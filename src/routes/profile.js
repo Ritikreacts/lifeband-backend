@@ -11,11 +11,11 @@
  *
  * Security model
  * ──────────────
- *   1. Caller supplies phoneNumber + OTP.
- *   2. We derive phoneHash = SHA-256(phone) and verify the OTP session.
- *   3. We look up Owner where { bandId, phoneHash } — BOTH must match.
- *      A valid OTP from a non-owner phone is always rejected (403).
- *   4. Only the five mutable fields are ever written; bandId, phoneHash,
+ *   1. Caller supplies emailAddress + OTP.
+ *   2. We derive emailHash = SHA-256(email) and verify the OTP session.
+ *   3. We look up Owner where { bandId, emailHash } — BOTH must match.
+ *      A valid OTP from a non-owner email is always rejected (403).
+ *   4. Only the five mutable fields are ever written; bandId, emailHash,
  *      bloodGroup, and all ownership data are permanently immutable.
  */
 
@@ -27,7 +27,7 @@ const router = Router();
 const Owner            = require("../models/Owner");
 const EmergencyProfile = require("../models/EmergencyProfile");
 const { sendOtp, verifyOtp, OtpError } = require("../services/otpService");
-const { hashPhone }    = require("../utils/hash");
+const { hashEmail }    = require("../utils/hash");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,24 +62,24 @@ const formatProfile = (doc) => ({
 // ─── 1. Request edit OTP ──────────────────────────────────────────────────────
 //
 //   POST /profile/request-otp
-//   Body: { phoneNumber }
+//   Body: { emailAddress }
 //
 //   Identical OTP flow to registration — we reuse sendOtp from otpService.
-//   We intentionally do NOT validate whether phoneNumber matches any owner
-//   here, to avoid leaking which phones have registered bands.
+//   We intentionally do NOT validate whether emailAddress matches any owner
+//   here, to avoid leaking which emails have registered bands.
 
 router.post("/request-otp", wrap(async (req, res) => {
-  const { phoneNumber } = req.body;
+  const { emailAddress } = req.body;
 
-  if (!phoneNumber) {
+  if (!emailAddress) {
     return res.status(400).json({
       success: false,
-      message: "phoneNumber is required",
+      message: "emailAddress is required",
     });
   }
 
   try {
-    const result = await sendOtp(phoneNumber);
+    const result = await sendOtp(emailAddress);
     return res.status(200).json({ success: true, message: result.message });
   } catch (err) {
     if (err instanceof OtpError) {
@@ -97,22 +97,22 @@ router.post("/request-otp", wrap(async (req, res) => {
 //
 //   POST /profile/update
 //   Body:
-//     { bandId, phoneNumber, otp,
+//     { bandId, emailAddress, otp,
 //       allergies?, medicalConditions?, medications?, notes?, emergencyContact? }
 //
 //   Gate 1 — OTP must be valid and still within its 5-minute window.
-//   Gate 2 — The verified phone must be the registered owner of bandId.
+//   Gate 2 — The verified email must be the registered owner of bandId.
 //   Write  — Only MUTABLE_FIELDS are ever touched; all others are ignored.
 //
 //   Response: updated EmergencyProfile (same shape as /emergency/:bandId).
 
 router.post("/update", wrap(async (req, res) => {
-  const { bandId, phoneNumber, otp, ...rest } = req.body;
+  const { bandId, emailAddress, otp, ...rest } = req.body;
 
   // ── Input validation ────────────────────────────────────────────────────
   const missing = [];
   if (!bandId)      missing.push("bandId");
-  if (!phoneNumber) missing.push("phoneNumber");
+  if (!emailAddress) missing.push("emailAddress");
   if (!otp)         missing.push("otp");
 
   if (missing.length > 0) {
@@ -137,10 +137,10 @@ router.post("/update", wrap(async (req, res) => {
 
   // ── Gate 1: Verify OTP ──────────────────────────────────────────────────
   // verifyOtp consumes the session on success — replay is impossible.
-  let phoneHash;
+  let emailHash;
   try {
-    const result = await verifyOtp(phoneNumber, String(otp));
-    phoneHash = result.phoneHash;
+    const result = await verifyOtp(emailAddress, String(otp));
+    emailHash = result.emailHash;
   } catch (err) {
     if (err instanceof OtpError) {
       return res.status(err.statusCode).json({
@@ -153,15 +153,15 @@ router.post("/update", wrap(async (req, res) => {
   }
 
   // ── Gate 2: Confirm ownership ───────────────────────────────────────────
-  // We derive phoneHash from the now-verified phone and match it against
+  // We derive emailHash from the now-verified email and match it against
   // the Owner record for this specific bandId.
-  // A correct OTP for a *different* phone that happens to own a *different*
+  // A correct OTP for a *different* email that happens to own a *different*
   // band is always rejected here.
-  const owner = await Owner.findOne({ bandId, phoneHash });
+  const owner = await Owner.findOne({ bandId, emailHash });
 
   if (!owner) {
     // Return 403 regardless of whether the bandId exists, to prevent
-    // enumeration of which bands are registered vs. which phones own them.
+    // enumeration of which bands are registered vs. which emails own them.
     return res.status(403).json({
       success: false,
       code: "NOT_OWNER",
