@@ -9,6 +9,12 @@ const bandSchema = new mongoose.Schema(
       index: true,
       trim: true,
     },
+    secureToken: {
+      type: String,
+      unique: true,
+      index: true,
+      sparse: true, // Allows null/missing for legacy, but ensures uniqueness if present
+    },
     series: {
       type: String,
       trim: true,

@@ -79,9 +79,11 @@ const formatProfile = (doc) => ({
 //     200 (profile data)   → Band is registered; returns EmergencyProfile
 
 router.get("/i/:bandId", wrap(async (req, res) => {
-  const { bandId } = req.params;
+  const searchParam = req.params.bandId;
 
-  const band = await Band.findOne({ bandId });
+  const band = await Band.findOne({
+    $or: [{ bandId: searchParam }, { secureToken: searchParam }]
+  });
 
   if (!band) {
     return res.status(404).json({

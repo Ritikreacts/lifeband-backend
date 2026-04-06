@@ -122,28 +122,7 @@ const getLastSeriesEnd = async () => {
   return latest ? latest.end : 0;
 };
 
-/**
- * Generate a QR code PNG for a single bandId.
- * URL format is fixed: {QR_BASE_URL}/{bandId}
- *
- * @param {string} bandId
- * @param {string} outDir  Absolute path to scratch directory
- * @returns {Promise<string>}  Absolute path of the written PNG
- */
-const generateQrPng = async (bandId, outDir) => {
-  // Fix #4 — QR payload is always exactly: https://lifeband.in/i/LB-000001
-  const url      = `${QR_BASE_URL}/${bandId}`;
-  const filePath = path.join(outDir, `${bandId}.png`);
 
-  await QRCode.toFile(filePath, url, {
-    type:   "png",
-    width:  300,
-    margin: 2,
-    color:  { dark: "#000000", light: "#ffffff" },
-  });
-
-  return filePath;
-};
 
 /**
  * Zip all PNG files inside `srcDir` into `destPath`.
@@ -211,12 +190,14 @@ const generateSeries = async (count, adminId) => {
     status: "generated",
   });
 
-  // ── Step 2: Build and bulk-insert Band documents ──────────────────────────
+  // Step 2: Build and bulk-insert Band documents
+  const crypto = require('crypto');
   const bandDocs = [];
   for (let i = start; i <= end; i++) {
     bandDocs.push({
       bandId:       formatBandId(i),
       series:       seriesLabel,
+      secureToken:  crypto.randomBytes(6).toString('hex'), // 12-char fully random unbreakable token
       isRegistered: false,
     });
   }
@@ -224,28 +205,33 @@ const generateSeries = async (count, adminId) => {
   try {
     await Band.insertMany(bandDocs, { ordered: true });
   } catch (insertErr) {
-    // If band insertion fails, mark series as failed so the range is visible
-    // in audit history but won't block a retry from the same range.
-    // In production you would want a compensating transaction here.
     await BandSeries.findByIdAndDelete(series._id);
     console.error(`[BandService] Band insertion failed for series ${series._id}:`, insertErr.message);
     throw insertErr;
   }
 
-  // ── Step 3: Generate QR PNGs into a temp scratch dir ─────────────────────
+  // Step 3: Generate QR PNGs
   const tmpDir = await fsP.mkdtemp(
     path.join(require("os").tmpdir(), "lifeband-qr-")
   );
 
-  // Fix #5: ZIP goes to permanent storage, not OS temp.
   const zipFileName = `${seriesLabel}.zip`;
   const zipPath     = path.join(STORAGE_DIR, zipFileName);
 
   try {
-    // Parallel QR generation — bounded by libuv's thread pool
-    await Promise.all(bandDocs.map((doc) => generateQrPng(doc.bandId, tmpDir)));
+    // Generate QR using the secureToken as the URL payload, but save the physical file as LB-XXXXXX.png
+    await Promise.all(bandDocs.map(async (doc) => {
+      const url      = `${QR_BASE_URL}/${doc.secureToken}`;
+      const filePath = path.join(tmpDir, `${doc.bandId}.png`);
 
-    // Zip all PNGs from scratch dir into permanent storage
+      await QRCode.toFile(filePath, url, {
+        type:   "png",
+        width:  300,
+        margin: 2,
+        color:  { dark: "#000000", light: "#ffffff" },
+      });
+    }));
+
     await zipDirectory(tmpDir, zipPath);
   } catch (qrErr) {
     // QR/ZIP failure is non-critical for the band records — they exist in DB.
