@@ -7,6 +7,10 @@ const adminUserSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    passwordHash: {
+      type: String,
+      required: true,
+    },
     createdAt: {
       type: Date,
       default: Date.now,

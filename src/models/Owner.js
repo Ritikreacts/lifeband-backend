@@ -17,6 +17,11 @@ const ownerSchema = new mongoose.Schema(
       trim: true,
       maxlength: 255,
     },
+    email: {
+      type: String,
+      trim: true,
+      maxlength: 255,
+    },
     createdAt: {
       type: Date,
       default: Date.now,

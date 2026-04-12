@@ -5,6 +5,9 @@ const adminRouter   = require("./routes/admin");
 const otpRouter     = require("./routes/otp");
 const app = express();
 
+// Trust reverse proxies (required for express-rate-limit when using ngrok/Cloudflare)
+app.set("trust proxy", 1);
+
 // ─── Body Parsing ─────────────────────────────────────────────────────────────
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false }));

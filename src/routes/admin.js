@@ -6,8 +6,7 @@
  *
  * Auth model
  * ──────────
- *   Public  →  POST /admin/request-otp
- *   Public  →  POST /admin/login        (OTP → JWT)
+ *   Public  →  POST /admin/login        (email + password → JWT)
  *   JWT     →  all other /admin/* routes  (adminAuth middleware)
  *
  * Admin is explicitly PROHIBITED from touching EmergencyProfile,
@@ -26,25 +25,24 @@ const AdminUser  = require("../models/AdminUser");
 const Band       = require("../models/Band");
 const BandSeries = require("../models/BandSeries");
 const adminAuth  = require("../middleware/adminAuth");
-const { sendOtp, verifyOtp, OtpError } = require("../services/otpService");
 const { generateSeries, MAX_PER_BATCH } = require("../services/bandService");
-const { signToken }                    = require("../utils/hash");
+const { hashEmail, verifyPasswordHash, signToken } = require("../utils/hash");
 
 // ─── Rate Limiters ────────────────────────────────────────────────────────────
 
 /**
- * Admin OTP rate limit: 5 requests per hour per IP.
- * Protects email sending quotas and prevents enumeration of admin emails.
+ * Admin login rate limit: 10 requests per 15 minutes per IP.
+ * Protects against brute-force password attempts.
  */
-const adminOtpLimiter = rateLimit({
-  windowMs:         60 * 60 * 1000, // 1 hour
-  max:              5,
+const adminLoginLimiter = rateLimit({
+  windowMs:         15 * 60 * 1000, // 15 minutes
+  max:              10,
   standardHeaders:  true,
   legacyHeaders:    false,
   message: {
     success: false,
     code:    "RATE_LIMITED",
-    message: "Too many OTP requests. Please try again in an hour.",
+    message: "Too many login attempts. Please try again in 15 minutes.",
   },
 });
 
@@ -53,90 +51,52 @@ const adminOtpLimiter = rateLimit({
 /** Forward async errors to Express global error handler. */
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
-// ─── 1. Request admin OTP ─────────────────────────────────────────────────────
-//
-//   POST /admin/request-otp
-//   Body: { emailAddress }
-//
-//   We do NOT validate whether the email is a known admin here — that
-//   check happens at login time. This prevents enumeration of admin emails.
-
-router.post("/request-otp", adminOtpLimiter, wrap(async (req, res) => {
-  const { emailAddress } = req.body;
-
-  if (!emailAddress) {
-    return res.status(400).json({
-      success: false,
-      message: "emailAddress is required",
-    });
-  }
-
-  try {
-    const result = await sendOtp(emailAddress);
-    return res.status(200).json({ success: true, message: result.message });
-  } catch (err) {
-    if (err instanceof OtpError) {
-      return res.status(err.statusCode).json({
-        success: false,
-        code: err.code,
-        message: err.message,
-      });
-    }
-    throw err;
-  }
-}));
-
-// ─── 2. Admin login (OTP → JWT) ───────────────────────────────────────────────
+// ─── 1. Admin login (email + password → JWT) ─────────────────────────────────
 //
 //   POST /admin/login
-//   Body: { emailAddress, otp }
+//   Body: { emailAddress, password }
 //
 //   Steps:
-//     a) Verify OTP (consumes session — replay proof).
-//     b) Derive emailHash and look up AdminUser.
-//     c) If no AdminUser record exists → 403 (not authorised as admin).
-//     d) Issue a signed JWT containing { adminId, emailHash, role:"admin" }.
+//     a) Hash email to find the AdminUser.
+//     b) Timing-safe compare the submitted password against stored hash.
+//     c) If valid → issue JWT containing { adminId, emailHash, role:"admin" }.
+//     d) Deliberately vague error messages to prevent email/password enumeration.
 
-router.post("/login", wrap(async (req, res) => {
-  const { emailAddress, otp } = req.body;
+router.post("/login", adminLoginLimiter, wrap(async (req, res) => {
+  const { emailAddress, password } = req.body;
 
-  if (!emailAddress || !otp) {
+  if (!emailAddress || !password) {
     return res.status(400).json({
       success: false,
-      message: "emailAddress and otp are required",
+      message: "emailAddress and password are required",
     });
   }
 
-  // Gate 1: OTP verification
-  let emailHash;
-  try {
-    const result = await verifyOtp(emailAddress, String(otp));
-    emailHash = result.emailHash;
-  } catch (err) {
-    if (err instanceof OtpError) {
-      return res.status(err.statusCode).json({
-        success: false,
-        code: err.code,
-        message: err.message,
-      });
-    }
-    throw err;
-  }
-
-  // Gate 2: AdminUser existence check
+  // Step 1: Derive emailHash and look up AdminUser
+  const emailHash = hashEmail(emailAddress);
   const admin = await AdminUser.findOne({ emailHash });
 
   if (!admin) {
-    // Deliberate: same message whether OTP was valid-but-not-admin or
-    // email simply isn't an admin. Avoids leaking admin email list.
-    return res.status(403).json({
+    // Deliberate: same message whether email is wrong or password is wrong
+    return res.status(401).json({
       success: false,
-      code: "NOT_ADMIN",
-      message: "Access denied",
+      code: "INVALID_CREDENTIALS",
+      message: "Invalid email or password",
     });
   }
 
-  // Issue JWT
+  // Step 2: Timing-safe password comparison
+  const isValid = verifyPasswordHash(password, admin.passwordHash);
+
+  if (!isValid) {
+    return res.status(401).json({
+      success: false,
+      code: "INVALID_CREDENTIALS",
+      message: "Invalid email or password",
+    });
+  }
+
+  // Step 3: Issue JWT
   const token = signToken({
     adminId:   admin._id.toString(),
     emailHash: admin.emailHash,
@@ -154,7 +114,7 @@ router.post("/login", wrap(async (req, res) => {
 // All routes below this point require a valid admin JWT.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── 3. Dashboard ─────────────────────────────────────────────────────────────
+// ─── 2. Dashboard ─────────────────────────────────────────────────────────────
 //
 //   GET /admin/dashboard
 //   Auth: Bearer JWT
@@ -168,6 +128,44 @@ router.get("/dashboard", adminAuth, wrap(async (req, res) => {
     Band.countDocuments({ isRegistered: true }),
     BandSeries.findOne().sort({ createdAt: -1 }).lean(),
   ]);
+
+  // Fetch recent profiles with owner emails and scan counts
+  const EmergencyProfile = require("../models/EmergencyProfile");
+  const Owner = require("../models/Owner");
+
+  // Get last 50 updated profiles
+  const profiles = await EmergencyProfile.find().sort({ updatedAt: -1 }).limit(50).lean();
+  
+  // Find matching owners to get full emails
+  const bandIds = profiles.map(p => p.bandId);
+  const owners = await Owner.find({ bandId: { $in: bandIds } }).lean();
+  const bandsInfo = await Band.find({ bandId: { $in: bandIds } }).select("bandId scanCount registeredAt").lean();
+  
+  const ownerMap = owners.reduce((acc, owner) => {
+    // Show full email if available, otherwise show obfuscated for old records
+    acc[owner.bandId] = owner.email || owner.emailObfuscated || "Hidden";
+    return acc;
+  }, {});
+
+  const bandMap = bandsInfo.reduce((acc, b) => {
+    acc[b.bandId] = { scanCount: b.scanCount || 0, registeredAt: b.registeredAt };
+    return acc;
+  }, {});
+
+  const users = profiles.map(p => ({
+    bandId: p.bandId,
+    name: p.name || "Unknown",
+    bloodGroup: p.bloodGroup,
+    email: ownerMap[p.bandId] || "Unknown",
+    scanCount: bandMap[p.bandId]?.scanCount || 0,
+    registeredAt: bandMap[p.bandId]?.registeredAt || p.updatedAt,
+    updatedAt: p.updatedAt
+  }));
+
+  // Return all registration dates for flexible frontend chart filtering
+  const recentRegistrations = await Band.find({ isRegistered: true })
+    .select('registeredAt')
+    .lean();
 
   return res.status(200).json({
     success: true,
@@ -186,11 +184,13 @@ router.get("/dashboard", adminAuth, wrap(async (req, res) => {
             createdAt: latestSeries.createdAt,
           }
         : null,
+      users,
+      registrations: recentRegistrations.map(r => r.registeredAt)
     },
   });
 }));
 
-// ─── 4. List all series ───────────────────────────────────────────────────────
+// ─── 3. List all series ───────────────────────────────────────────────────────
 //
 //   GET /admin/series
 //   Auth: Bearer JWT
@@ -217,7 +217,7 @@ router.get("/series", adminAuth, wrap(async (req, res) => {
   return res.status(200).json({ success: true, series: formatted });
 }));
 
-// ─── 5. Generate a new series of bands ───────────────────────────────────────
+// ─── 4. Generate a new series of bands ───────────────────────────────────────
 //
 //   POST /admin/generate-series
 //   Auth: Bearer JWT
@@ -270,7 +270,7 @@ router.post("/generate-series", adminAuth, wrap(async (req, res) => {
   });
 }));
 
-// ─── 6. Download ZIP for a series ────────────────────────────────────────────
+// ─── 5. Download ZIP for a series ────────────────────────────────────────────
 //
 //   GET /admin/download/:seriesId
 //   Auth: Bearer JWT

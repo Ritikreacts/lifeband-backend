@@ -65,16 +65,27 @@ const formatProfile = (doc) => ({
 //   Body: { emailAddress }
 //
 //   Identical OTP flow to registration — we reuse sendOtp from otpService.
-//   We intentionally do NOT validate whether emailAddress matches any owner
-//   here, to avoid leaking which emails have registered bands.
+//
+//   We now validate that the email is the verified owner of the bandId
+//   BEFORE dispatching an OTP. This ensures non-owners cannot trigger OTPs.
 
 router.post("/request-otp", wrap(async (req, res) => {
-  const { emailAddress } = req.body;
+  const { emailAddress, bandId } = req.body;
 
-  if (!emailAddress) {
+  if (!emailAddress || !bandId) {
     return res.status(400).json({
       success: false,
-      message: "emailAddress is required",
+      message: "emailAddress and bandId are required",
+    });
+  }
+
+  const emailHash = hashEmail(emailAddress);
+  const owner = await Owner.findOne({ bandId, emailHash });
+
+  if (!owner) {
+    return res.status(403).json({
+      success: false,
+      message: "This email is not the registered owner of this band.",
     });
   }
 

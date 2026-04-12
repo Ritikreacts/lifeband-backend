@@ -75,4 +75,19 @@ const verifyToken = (token) => {
   return jwt.verify(token, JWT_SECRET);
 };
 
-module.exports = { hashEmail, hashOtp, hashValue, signToken, verifyToken };
+/**
+ * Timing-safe comparison of a plain password against a stored HMAC-SHA256 hash.
+ *
+ * @param {string} password    - Plain password submitted by the user
+ * @param {string} storedHash  - HMAC-SHA256 hex digest from the database
+ * @returns {boolean}
+ */
+const verifyPasswordHash = (password, storedHash) => {
+  const attempt = hashValue(password);
+  return crypto.timingSafeEqual(
+    Buffer.from(attempt, "hex"),
+    Buffer.from(storedHash, "hex")
+  );
+};
+
+module.exports = { hashEmail, hashOtp, hashValue, verifyPasswordHash, signToken, verifyToken };

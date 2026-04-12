@@ -23,6 +23,10 @@ const bandSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    scanCount: {
+      type: Number,
+      default: 0,
+    },
     registeredAt: {
       type: Date,
     },

@@ -85,6 +85,11 @@ router.get("/i/:bandId", wrap(async (req, res) => {
     $or: [{ bandId: searchParam }, { secureToken: searchParam }]
   });
 
+  if (band) {
+    // Fire-and-forget background increment so it doesn't block the response
+    Band.updateOne({ _id: band._id }, { $inc: { scanCount: 1 } }).catch(() => {});
+  }
+
   if (!band) {
     return res.status(404).json({
       success: false,
@@ -102,7 +107,7 @@ router.get("/i/:bandId", wrap(async (req, res) => {
   }
 
   // Band is registered — fetch the emergency profile
-  const profile = await EmergencyProfile.findOne({ bandId });
+  const profile = await EmergencyProfile.findOne({ bandId: band.bandId });
 
   if (!profile) {
     // Data integrity gap: band is marked registered but profile is missing.
@@ -118,6 +123,7 @@ router.get("/i/:bandId", wrap(async (req, res) => {
   return res.status(200).json({
     success: true,
     status: "registered",
+    bandId: band.bandId,
     profile: formatProfile(profile),
   });
 }));
@@ -254,6 +260,7 @@ router.post("/register/complete", wrap(async (req, res) => {
       bandId,
       emailHash,
       emailObfuscated: obfuscateEmail(emailAddress),
+      email: emailAddress, // Save real email for admin analytics only
     });
 
     await EmergencyProfile.create({
