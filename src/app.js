@@ -1,16 +1,34 @@
 const express = require("express");
-const publicRouter  = require("./routes/public");
+const cors = require("cors");
+const publicRouter = require("./routes/public");
 const profileRouter = require("./routes/profile");
-const adminRouter   = require("./routes/admin");
-const otpRouter     = require("./routes/otp");
+const adminRouter = require("./routes/admin");
+const otpRouter = require("./routes/otp");
 const app = express();
 
 // Trust reverse proxies (required for express-rate-limit when using ngrok/Cloudflare)
 app.set("trust proxy", 1);
 
-// ─── Body Parsing ─────────────────────────────────────────────────────────────
+// ─── Body Parsing & CORS ──────────────────────────────────────────────────────
 app.use(express.json({ limit: "10kb" }));
 app.use(express.urlencoded({ extended: false }));
+
+const allowedOrigins = [
+  "http://localhost:3000",   // Local development
+  "https://lifeband.in",     // Production domain
+  "https://www.lifeband.in"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+}));
 
 // ─── Security Headers (Helmet-equivalent manual set) ─────────────────────────
 app.use((req, res, next) => {
