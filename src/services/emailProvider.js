@@ -2,41 +2,29 @@
  * services/emailProvider.js
  *
  * Email gateway abstraction for LifeBand.
- * Provider: Nodemailer
- *
- * This file exports generic functions to send OTPs and generic emails.
+ * Provider: Resend
  *
  * Environment variables required:
- *   SMTP_HOST
- *   SMTP_PORT
- *   SMTP_USER
- *   SMTP_PASS
- *   EMAIL_FROM
- *   EMAIL_ENABLED  — set to "true" to send real emails (any other value = log only)
+ *   RESEND_API_KEY  - Your Resend API key
+ *   EMAIL_FROM      - E.g., LifeBand <noreply@lifeband.in> (must be an authenticated domain on Resend)
+ *   EMAIL_ENABLED   - Set to "true" to send real emails (any other value = log only)
  */
 
 "use strict";
 
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 
-const SMTP_HOST     = process.env.SMTP_HOST;
-const SMTP_PORT     = process.env.SMTP_PORT;
-const SMTP_USER     = process.env.SMTP_USER;
-const SMTP_PASS     = process.env.SMTP_PASS;
-const EMAIL_FROM    = process.env.EMAIL_FROM || "noreply@lifeband.in";
-const EMAIL_ENABLED = process.env.EMAIL_ENABLED === "true";
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const EMAIL_FROM     = process.env.EMAIL_FROM || "LifeBand <noreply@lifeband.in>";
+const EMAIL_ENABLED  = process.env.EMAIL_ENABLED === "true";
 
-let transporter = null;
+let resendClient = null;
 if (EMAIL_ENABLED) {
-  transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_PORT == 465, // true for 465, false for other ports
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    },
-  });
+  if (!RESEND_API_KEY) {
+    console.error("[Email] RESEND_API_KEY is completely missing from your .env but EMAIL_ENABLED is true!");
+  } else {
+    resendClient = new Resend(RESEND_API_KEY);
+  }
 }
 
 /**
@@ -62,20 +50,34 @@ const sendOtpEmail = async (email, otp) => {
     return;
   }
 
-  if (!transporter) {
-    throw new Error("Transporter is not configured. Please check SMTP environment variables.");
+  if (!resendClient) {
+    throw new Error("Resend is not configured. Please check your RESEND_API_KEY in the .env file.");
   }
 
   try {
-    const info = await transporter.sendMail({
+    const { data, error } = await resendClient.emails.send({
       from: EMAIL_FROM,
       to: address,
-      subject: "LifeBand Verification Code",
+      subject: "Your LifeBand verification code",
       text: `Your LifeBand verification code is: ${otp}. It will expire in 5 minutes. DO NOT SHARE THIS OTP WITH ANYONE.`,
-      html: `<p>Your LifeBand verification code is: <strong>${otp}</strong>.</p><p>It will expire in 5 minutes.</p><p><strong>DO NOT SHARE THIS OTP WITH ANYONE.</strong></p>`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border-radius: 8px; border: 1px solid #eaeaea;">
+          <h2 style="color: #333; margin-top: 0;">LifeBand Verification</h2>
+          <p style="color: #666; font-size: 16px;">Please use the following OTP to complete your request. It will expire in 5 minutes.</p>
+          <div style="background-color: #f4f4f5; padding: 16px; border-radius: 6px; text-align: center; margin: 24px 0;">
+            <h1 style="margin: 0; color: #18181b; font-size: 32px; letter-spacing: 4px;">${otp}</h1>
+          </div>
+          <p style="color: #888; font-size: 12px; margin-bottom: 0;"><strong>DO NOT SHARE THIS OTP WITH ANYONE.</strong> If you didn't request this, please ignore this email.</p>
+        </div>
+      `,
     });
 
-    console.log(`[Email] OTP dispatched to ${address}. MessageId: ${info.messageId}`);
+    if (error) {
+      console.error(`[Email] Resend API error for ${address}:`, error);
+      throw new Error(error.message);
+    }
+
+    console.log(`[Email] OTP dispatched to ${address}. Resend ID: ${data?.id}`);
   } catch (err) {
     console.error(`[Email] delivery failed for ${address}:`, err.message);
     throw new Error(`Email delivery failed: ${err.message}`);
@@ -86,6 +88,7 @@ const sendOtpEmail = async (email, otp) => {
  * Generic Email sender — extend this if you need non-OTP Emails.
  *
  * @param {string} email
+ * @param {string} subject
  * @param {string} message
  * @returns {Promise<void>}
  */
@@ -96,14 +99,18 @@ const sendEmail = async (email, subject, message) => {
     return;
   }
   
-  if (!transporter) return;
+  if (!resendClient) return;
 
-  await transporter.sendMail({
+  const { error } = await resendClient.emails.send({
     from: EMAIL_FROM,
     to: address,
     subject: subject,
     text: message,
   });
+
+  if (error) {
+    console.error(`[Email] delivery failed for ${address}:`, error);
+  }
 };
 
 module.exports = { sendOtpEmail, sendEmail };

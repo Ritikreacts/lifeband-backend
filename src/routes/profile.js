@@ -28,6 +28,7 @@ const Owner            = require("../models/Owner");
 const EmergencyProfile = require("../models/EmergencyProfile");
 const { sendOtp, verifyOtp, OtpError } = require("../services/otpService");
 const { hashEmail }    = require("../utils/hash");
+const jwt              = require("jsonwebtoken");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -104,12 +105,52 @@ router.post("/request-otp", wrap(async (req, res) => {
   }
 }));
 
-// ─── 2. Verify OTP and update profile ────────────────────────────────────────
+// ─── 2. Verify OTP and issue Edit Token ──────────────────────────────────────
+//
+//   POST /profile/verify-otp
+//   Body: { emailAddress, otp, bandId }
+//
+//   Verifies the OTP and issues a 15-minute JWT (editToken) to unlock the UI.
+
+router.post("/verify-otp", wrap(async (req, res) => {
+  const { emailAddress, otp, bandId } = req.body;
+
+  if (!emailAddress || !otp || !bandId) {
+    return res.status(400).json({ success: false, message: "Missing fields" });
+  }
+
+  let emailHash;
+  try {
+    const result = await verifyOtp(emailAddress, String(otp));
+    emailHash = result.emailHash;
+  } catch (err) {
+    if (err instanceof OtpError) {
+      return res.status(err.statusCode).json({
+        success: false, code: err.code, message: err.message,
+      });
+    }
+    throw err;
+  }
+
+  const owner = await Owner.findOne({ bandId, emailHash });
+  if (!owner) {
+    return res.status(403).json({ success: false, message: "Not the registered owner." });
+  }
+
+  const editToken = jwt.sign(
+    { purpose: "edit_profile", bandId, emailHash },
+    process.env.JWT_SECRET,
+    { expiresIn: "15m" }
+  );
+
+  return res.status(200).json({ success: true, editToken });
+}));
+
+// ─── 3. Apply profile updates ────────────────────────────────────────────────
 //
 //   POST /profile/update
 //   Body:
-//     { bandId, emailAddress, otp,
-//       allergies?, medicalConditions?, medications?, notes?, emergencyContact? }
+//     { editToken, allergies?, medicalConditions?, medications?, notes?, emergencyContact? }
 //
 //   Gate 1 — OTP must be valid and still within its 5-minute window.
 //   Gate 2 — The verified email must be the registered owner of bandId.
@@ -118,20 +159,21 @@ router.post("/request-otp", wrap(async (req, res) => {
 //   Response: updated EmergencyProfile (same shape as /emergency/:bandId).
 
 router.post("/update", wrap(async (req, res) => {
-  const { bandId, emailAddress, otp, ...rest } = req.body;
+  const { editToken, ...rest } = req.body;
 
-  // ── Input validation ────────────────────────────────────────────────────
-  const missing = [];
-  if (!bandId)      missing.push("bandId");
-  if (!emailAddress) missing.push("emailAddress");
-  if (!otp)         missing.push("otp");
-
-  if (missing.length > 0) {
-    return res.status(400).json({
-      success: false,
-      message: `Missing required fields: ${missing.join(", ")}`,
-    });
+  if (!editToken) {
+    return res.status(401).json({ success: false, message: "Missing editToken" });
   }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(editToken, process.env.JWT_SECRET);
+    if (decoded.purpose !== "edit_profile") throw new Error("Invalid token purpose");
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "Invalid or expired edit session. Please request a new OTP." });
+  }
+
+  const { bandId, emailHash } = decoded;
 
   // Reject requests that carry no updatable fields at all.
   const updatePayload = {};
@@ -146,24 +188,9 @@ router.post("/update", wrap(async (req, res) => {
     });
   }
 
-  // ── Gate 1: Verify OTP ──────────────────────────────────────────────────
-  // verifyOtp consumes the session on success — replay is impossible.
-  let emailHash;
-  try {
-    const result = await verifyOtp(emailAddress, String(otp));
-    emailHash = result.emailHash;
-  } catch (err) {
-    if (err instanceof OtpError) {
-      return res.status(err.statusCode).json({
-        success: false,
-        code: err.code,
-        message: err.message,
-      });
-    }
-    throw err;
-  }
-
   // ── Gate 2: Confirm ownership ───────────────────────────────────────────
+  // We double-check the DB in case ownership was rotated or DB was wiped
+  // while the token was active.
   // We derive emailHash from the now-verified email and match it against
   // the Owner record for this specific bandId.
   // A correct OTP for a *different* email that happens to own a *different*
